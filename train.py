@@ -14,31 +14,39 @@ def visualize_training_data(dataloader, save_dir="train_vis", num_batches=10):
     os.makedirs(save_dir, exist_ok=True)
     batch_count = 0
     for imgs, targets in dataloader:
-        grid_cols = max(1, int(np.sqrt(len(imgs))))
-        # imgs: [B, 3, 224, 224], targets: [B, 4]
+        # imgs: [B, 3, H, W]
+        # targets: [B, num_boxes, 4] (cx, cy, bw, bh)
         B, _, H, W = imgs.shape
+        num_boxes = targets.shape[1]
+
+        grid_cols = max(1, int(np.sqrt(B)))
         grid_rows = int(np.ceil(B / grid_cols))
 
-        # tạo canvas chứa cả batch
         grid_img = np.zeros((grid_rows * H, grid_cols * W, 3), dtype=np.uint8)
 
         for i in range(B):
-            img = imgs[i].permute(1, 2, 0).numpy() * 255  # CHW->HWC
+            img = imgs[i].permute(1, 2, 0).numpy() * 255
             img = img.astype(np.uint8)
             img = np.ascontiguousarray(img)
 
-            # bbox (cx,cy,bw,bh) normalized
-            cx, cy, bw, bh = targets[i].numpy()
-            xmin = int((cx - bw / 2) * W)
-            xmax = int((cx + bw / 2) * W)
-            ymin = int((cy - bh / 2) * H)
-            ymax = int((cy + bh / 2) * H)
+            # lặp qua từng bbox trong ảnh
+            for j in range(num_boxes):
+                cx, cy, bw, bh = targets[i, j].numpy()
 
-            cv2.rectangle(img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-            cv2.putText(img, "GT", (xmin, max(ymin - 5, 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                # bỏ qua box rỗng
+                if bw == 0 and bh == 0:
+                    continue
 
-            # vị trí trong grid
+                xmin = int((cx - bw / 2) * W)
+                xmax = int((cx + bw / 2) * W)
+                ymin = int((cy - bh / 2) * H)
+                ymax = int((cy + bh / 2) * H)
+
+                cv2.rectangle(img, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                cv2.putText(img, f"GT{j+1}", (xmin, max(ymin - 5, 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+            # gắn vào grid
             row, col = divmod(i, grid_cols)
             y0, y1 = row * H, (row + 1) * H
             x0, x1 = col * W, (col + 1) * W
@@ -53,22 +61,23 @@ def visualize_training_data(dataloader, save_dir="train_vis", num_batches=10):
             break
 
     print(f"Saved {num_batches} batches of training samples to '{save_dir}'")
+
     
 
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_dataset = BBoxDataset(
-        img_dir="dataset/train/images",
-        csv_file="dataset/train/labels/merged_labels.csv",
+        img_dir=r"datasua\train",
+        csv_file=r"datasua\train.csv",
     )
     
     test_dataset = BBoxDataset(
-        img_dir="dataset/test",
-        csv_file="dataset/test/label.csv",
+        img_dir=r"datasua\test",
+        csv_file=r"datasua\test.csv",
         augment=False
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
     visualize_training_data(train_loader, save_dir="visualize/train", num_batches=10)
     visualize_training_data(test_loader, save_dir="visualize/test", num_batches=3)
@@ -77,7 +86,7 @@ def train():
     criterion = MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    epochs = 500
+    epochs = 100
     min_loss = float('inf')
     for epoch in range(epochs):
         running_loss = 0.0
@@ -108,7 +117,7 @@ def train():
         print(f"Epoch [{epoch + 1}/{epochs}], Train Loss: {epoch_loss:.4f}, Test Loss: {test_loss:.4f}")
         if test_loss < min_loss:
             min_loss = test_loss
-            torch.save(model.state_dict(), "best.pt")
+            torch.save(model.state_dict(), "best1.pt")
             print(f"✅ Model saved with loss: {min_loss:.4f}")
 
 
