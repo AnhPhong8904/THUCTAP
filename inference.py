@@ -9,7 +9,7 @@ from model import SimpleCNN
 from dataset import BBoxDataset
 
 
-def infer(image_path, model_path="simple_cnn_bbox.pth", save_path="result.jpg"):
+def infer(image_path, model_path, save_path="result.jpg"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # load model
@@ -25,31 +25,34 @@ def infer(image_path, model_path="simple_cnn_bbox.pth", save_path="result.jpg"):
 
     # forward pass
     with torch.no_grad():
-        output = model(input_tensor).cpu().numpy()[0]  # [cx, cy, w, h] normalized
-
-    h, w = input_tensor.shape[2:4]  # should be 224x224
-    cx, cy, bw, bh = output
-    
-    # convert to pixel coordinates
-    xmin = (cx - bw / 2) * w 
-    xmax = (cx + bw / 2) * w
-    ymin = (cy - bh / 2) * h
-    ymax = (cy + bh / 2) * h
-    
-    xmin = (xmin - left) / scale
-    ymin = (ymin - top) / scale
-    xmax = (xmax - left) / scale
-    ymax = (ymax - top) / scale
-    
-    xmin = max(0, xmin)
-    ymin = max(0, ymin)
-    xmax = min(image.shape[1], xmax)
-    ymax = min(image.shape[0], ymax)
+        output = model(input_tensor).cpu().numpy()[0]  # [conf, cx, cy, w, h] normalized
+    # postprocess
+    conf = output[:, 0]
+    bboxes = output[:, 1:]  # (cx, cy, w, h) normalized
+    conf_threshold = 0.5
+    keep = conf >= conf_threshold
+    h, w = input_tensor.shape[2:4] 
     # draw bbox
     img_cv = image.copy()
-    cv2.rectangle(img_cv, (int(xmin), int(ymin)), (int(xmax), int(ymax)), (0, 255, 0), 2)
-    cv2.putText(img_cv, "Pred", (int(xmin), max(0, int(ymin) - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    for c, (cx, cy, bw, bh) in zip(conf[keep], bboxes[keep]):
+        # convert to pixel coordinates
+        xmin = (cx - bw / 2) * w 
+        xmax = (cx + bw / 2) * w
+        ymin = (cy - bh / 2) * h
+        ymax = (cy + bh / 2) * h
+        
+        xmin = (xmin - left) / scale
+        ymin = (ymin - top) / scale
+        xmax = (xmax - left) / scale
+        ymax = (ymax - top) / scale
+        
+        xmin = max(0, xmin)
+        ymin = max(0, ymin)
+        xmax = min(image.shape[1], xmax)
+        ymax = min(image.shape[0], ymax)
+        cv2.rectangle(img_cv, (int(xmin), int(ymin)), (int(xmax), int(ymax)), (0, 255, 0), 2)
+        cv2.putText(image, f"Pred {c:.2f}", (int(xmin),  int(ymin) - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
     # save result
     cv2.imwrite(save_path, img_cv)
