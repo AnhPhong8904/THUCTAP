@@ -10,15 +10,13 @@ from scipy.optimize import linear_sum_assignment
 class ObjectDetectorLoss(nn.Module):
     def __init__(self, 
                  weight_box=5,
-                 weight_cls=0.5,
-                 topk=3):
+                 weight_cls=0.5):
         super(ObjectDetectorLoss, self).__init__()
         self.weight_box = weight_box
         self.weight_cls = weight_cls
-        self.mse_loss = nn.MSELoss(reduction='sum')
-        self.bce_loss = nn.BCEWithLogitsLoss(reduction='sum')
+        self.bce_loss = nn.BCEWithLogitsLoss(reduction='none')
         self.iou_loss = IoULoss()
-        self.assigner = Assigner(topk=topk)
+        self.assigner = Assigner()
     
     def remove_empty_boxes(self, targets):
         # targets: [B, N, 4] (cx, cy, w, h) normalized
@@ -26,83 +24,103 @@ class ObjectDetectorLoss(nn.Module):
         num_boxes = torch.sum(mask, dim=-1)  # [B]
         return targets[:num_boxes]
     
+    def decode_boxes(self, preds, anchors, strides):
+        # preds: [B, H*W, 4] (cx, cy, w, h) normalized
+        # anchors: [H*W, 2] (x, y) in feature map scale
+        # strides: [H*W, 1]
+        box_xy = (preds[..., :2] + anchors) * strides  # [B, H*W, 2] in input image scale
+        box_wh = preds[..., 2:] * strides  # [B, H*W, 2] in input image scale
+        return torch.cat([box_xy, box_wh], dim=-1)  # [B, H*W, 4] (cx, cy, w, h) in input
+    
     def forward(self, preds:torch.Tensor, targets:torch.Tensor):
-        # preds: [B, 196, 5] (conf, cx, cy, w, h) normalized
+        # preds: [B, H*W, 5] (conf, cx, cy, w, h) normalized
         # targets: [B, N, 4] (cx, cy, w, h) normalized
-        
+        anchors = make_anchors(preds)  # [W*H, 2], [W*H, 1]
+        preds = preds.view(preds.size(0), -1, preds.size(-1))
         B, N, _ = targets.shape
         cls_loss = 0.0
         box_loss = 0.0
         for b in range(B):
             org_target = self.remove_empty_boxes(targets[b])
-            pred = preds[b]  # [196, 5]
-            cls_pred = pred[:, 0]  # [196]
-            box_pred = pred[:, 1:]  # [196, 4]
+            pred = preds[b]  # [H*W, 5]
+            cls_pred = pred[:, 0]  # [H*W]
+            box_pred = pred[:, 1:]  # [H*W, 4]
+            box_pred.clamp_(-1, 1)
+            box_pred[:, :2] = box_pred[:, :2] + anchors  # cx, cy
             cls_target = torch.zeros_like(cls_pred, device=preds.device)
+            balanced_conf = torch.ones_like(cls_target, device=preds.device)
             if org_target.shape[0] != 0:
                 # không có bbox GT trong ảnh này
                 # tính loss toàn bộ là loss của class = 0
-                assigned_indices, target_conf = self.assigner.assign(box_pred, org_target)  # [topk]
-                pos_box_pred = box_pred[assigned_indices]  # [topk, 4]
-                # tính loss box
-                box_loss += self.iou_loss(pos_box_pred, org_target)
-                # tính loss class
-                cls_target[assigned_indices] = 1.0  # có object
+                positive_mask, target_conf, new_target_box = self.assigner.assign(anchors, box_pred, org_target)  # [topk]
+                pos_box_pred = box_pred[positive_mask]  # [topk, 4]
+                # pos_box_pred = box_pred[assigned_indices]  # [topk, 4]
+                # # tính loss box
+                box_loss += self.iou_loss(pos_box_pred, new_target_box[positive_mask]) / positive_mask.shape[0]
+                # # tính loss class
+                cls_target[positive_mask] = 1.0
+                balanced_conf[positive_mask] = positive_mask.shape[0] / torch.sum(positive_mask) / 2
             else:
                 # không có bbox GT trong ảnh này
                 # tính loss toàn bộ là loss của class = 0
                 pass
-            cls_loss += self.bce_loss(cls_pred.sigmoid(), cls_target) / cls_pred.shape[0]
+            cls_loss += (self.bce_loss(cls_pred.sigmoid(), cls_target) * balanced_conf / cls_pred.shape[0]).sum()
+            
         
         return (self.weight_box * box_loss / B), (self.weight_cls * cls_loss / B)
     
     
 
 class Assigner:
-    def __init__(self, topk=3):
-        self.topk = topk
+    def __init__(self):
+        pass
     
-    def assign(self, preds, targets):
-        # preds: [196, 5] (conf, cx, cy, w, h) normalized
+    def assign(self, anchors, preds, targets):
+        # anchors: [H*W, 2] (cx, cy) normalized
         # targets: [N, 4] (cx, cy, w, h) normalized
-        ious = torch.zeros((preds.shape[0], targets.shape[0]), device=preds.device)
+        lambda_ious = torch.zeros((anchors.shape[0], targets.shape[0]), device=anchors.device)
+        ious = torch.zeros((anchors.shape[0], targets.shape[0]), device=anchors.device)
         for i, target in enumerate(targets):
-            for j, pred in enumerate(preds):
+            lambda_preds = torch.cat([anchors, target[2:].unsqueeze(0).repeat(anchors.shape[0], 1)], dim=-1)  # [H*W, 4]
+            for j, (lambda_pred, pred) in enumerate(zip(lambda_preds, preds)):
+                lambda_ious[j, i] = bbox_iou(lambda_pred, target)
                 ious[j, i] = bbox_iou(pred, target)
-        ious = torch.max(ious, dim=1).values
-        assigned_indices = torch.topk(ious, min(self.topk*targets.shape[0], ious.size(0)), dim=0).indices  # [topk, N]
-        assigned_indices = assigned_indices.view(-1).unique()  # loại bỏ trùng lặp
-        return assigned_indices, ious[assigned_indices]  # [M] M <= topk * N
-    
+        # get index of positives values 
+        positive_mask = torch.sum(lambda_ious >= 0.3, dim=1) > 0  # [H*W]
+        target_conf = torch.max(ious, dim=1).values
+        target_identities = torch.argmax(lambda_ious, dim=1)
+        new_box_label = torch.zeros_like(preds, device=anchors.device)
+        new_box_label[:] = targets[target_identities]  
+        # visulize matching result   
+        img = np.zeros((224, 224, 3), dtype=np.uint8)
+        for i, (anchor, positive) in enumerate(zip(anchors, positive_mask)):
+            x, y = int(anchor[0] * 224), int(anchor[1] * 224)
+            color = (0, 255, 0) if positive else (255, 0, 0)
+            cv2.circle(img, (x, y), 3, color, -1)
+        os.makedirs("visualize/assigner", exist_ok=True)
+        cv2.imwrite("visualize/assigner/assigner.jpg", img)
+        return positive_mask, target_conf, new_box_label
+        
 
 class IoULoss(nn.Module):
     def __init__(self, eps=1e-6):
         super(IoULoss, self).__init__()
         self.eps = eps
-        self.mse = nn.MSELoss()
+        self.mse = nn.MSELoss(reduction='mean')
 
     def forward(self, preds, targets):
         """
         preds: [M, 4] (cx, cy, w, h) normalized
         targets: [N, 4] (cx, cy, w, h) normalized
         """
-        if preds.numel() == 0 or targets.numel() == 0:
-            # nothing to match
-            return torch.tensor(0.0, device=preds.device, requires_grad=True)
-
-        # --- Hungarian matching ---
-        # compute pairwise cost matrix [M, N]
-        M, N = preds.size(0), targets.size(0)
-        cost_matrix = torch.cdist(preds, targets, p=2).cpu().detach().numpy()  # L2 distance
-
-        row_ind, col_ind = linear_sum_assignment(cost_matrix)
-
-        # select matched pairs
-        matched_preds = preds[row_ind]
-        matched_targets = targets[col_ind]
-
-        # compute regression loss with MSE
-        loss = self.mse(matched_preds, matched_targets)
+        # loss = self.mse(preds, targets)  # [M] IoU of matched boxes
+        # # compute regression loss with MSE
+        # return loss.sum()
+        preds = preds   # scale to input image size
+        targets = targets 
+        # targets *= 224  # scale to input image size
+        # preds *= 224  # scale to input image size
+        loss:torch.Tensor = self.mse(preds, targets)  # [M] IoU of matched boxes
         return loss
     
     
@@ -129,14 +147,26 @@ def bbox_iou(box1, box2):
     iou = intersection / union
     return iou
 
-def cxcywh_to_xyxy(box):
-    cx, cy, w, h = box
-    x1 = cx - w / 2
-    y1 = cy - h / 2
-    x2 = cx + w / 2
-    y2 = cy + h / 2
-    return torch.tensor([x1, y1, x2, y2], device=box.device)
+def cxcywh_to_xyxy(bboxes):
+    cx, cy, w, h = bboxes[..., 0], bboxes[..., 1], bboxes[..., 2], bboxes[..., 3]
+    xmin = cx - w / 2
+    ymin = cy - h / 2
+    xmax = cx + w / 2
+    ymax = cy + h / 2
+    return torch.stack([xmin, ymin, xmax, ymax], dim=-1)
 
+def make_anchors(feat, grid_cell_offset=0.5):
+    """Generate anchors from features."""
+    assert feat is not None
+    dtype, device = feat.dtype, feat.device
+    _, h, w, _ = feat.shape
+    sx = torch.arange(end=w, device=device, dtype=dtype) + grid_cell_offset  # shift x
+    sy = torch.arange(end=h, device=device, dtype=dtype) + grid_cell_offset  # shift y
+    sy, sx = torch.meshgrid(sy, sx)
+    anchor_points = torch.stack((sx, sy), -1).view(-1, 2)
+    anchor_points[..., 0] /= w  # normalize 0~1
+    anchor_points[..., 1] /= h  # normalize 0~1
+    return anchor_points
 
 def visualize_training_data(dataloader, save_dir="train_vis", num_batches=10):
     os.makedirs(save_dir, exist_ok=True)

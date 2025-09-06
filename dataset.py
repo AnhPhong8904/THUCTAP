@@ -30,7 +30,7 @@ class BBoxDataset(Dataset):
     def load_data(self):
         json_files = [f for f in os.listdir(self.json_dir) if f.endswith('.json')]
         for json_file in tqdm.tqdm(json_files, desc="Loading JSON files..."):
-            if json_file != "1.json":  # skip corrupted file
+            if json_file not in ["1.json"]:  # skip corrupted file
                 continue
             json_path = os.path.join(self.json_dir, json_file)
             with open(json_path, 'r') as f:
