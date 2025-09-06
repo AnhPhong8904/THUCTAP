@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import cv2
 import numpy as np
 import os
+from scipy.optimize import linear_sum_assignment
 
 
 class ObjectDetectorLoss(nn.Module):
@@ -15,7 +16,7 @@ class ObjectDetectorLoss(nn.Module):
         self.weight_box = weight_box
         self.weight_cls = weight_cls
         self.mse_loss = nn.MSELoss(reduction='sum')
-        self.ce_loss = nn.CrossEntropyLoss(reduction='sum')
+        self.bce_loss = nn.BCEWithLogitsLoss(reduction='sum')
         self.iou_loss = IoULoss()
         self.assigner = Assigner(topk=topk)
     
@@ -28,6 +29,7 @@ class ObjectDetectorLoss(nn.Module):
     def forward(self, preds:torch.Tensor, targets:torch.Tensor):
         # preds: [B, 196, 5] (conf, cx, cy, w, h) normalized
         # targets: [B, N, 4] (cx, cy, w, h) normalized
+        
         B, N, _ = targets.shape
         cls_loss = 0.0
         box_loss = 0.0
@@ -40,7 +42,7 @@ class ObjectDetectorLoss(nn.Module):
             if org_target.shape[0] != 0:
                 # không có bbox GT trong ảnh này
                 # tính loss toàn bộ là loss của class = 0
-                assigned_indices = self.assigner.assign(box_pred, org_target)  # [topk]
+                assigned_indices, target_conf = self.assigner.assign(box_pred, org_target)  # [topk]
                 pos_box_pred = box_pred[assigned_indices]  # [topk, 4]
                 # tính loss box
                 box_loss += self.iou_loss(pos_box_pred, org_target)
@@ -50,10 +52,9 @@ class ObjectDetectorLoss(nn.Module):
                 # không có bbox GT trong ảnh này
                 # tính loss toàn bộ là loss của class = 0
                 pass
-            cls_loss += self.ce_loss(cls_pred.unsqueeze(-1), cls_target.unsqueeze(-1))
+            cls_loss += self.bce_loss(cls_pred.sigmoid(), cls_target) / cls_pred.shape[0]
         
-        print(box_loss, cls_loss)
-        return (self.weight_box * box_loss + self.weight_cls * cls_loss) / B
+        return (self.weight_box * box_loss / B), (self.weight_cls * cls_loss / B)
     
     
 
@@ -68,34 +69,41 @@ class Assigner:
         for i, target in enumerate(targets):
             for j, pred in enumerate(preds):
                 ious[j, i] = bbox_iou(pred, target)
-        assigned_indices = torch.topk(ious, self.topk, dim=0).indices  # [topk, N]
+        ious = torch.max(ious, dim=1).values
+        assigned_indices = torch.topk(ious, min(self.topk*targets.shape[0], ious.size(0)), dim=0).indices  # [topk, N]
         assigned_indices = assigned_indices.view(-1).unique()  # loại bỏ trùng lặp
-        return assigned_indices  # [M] M <= topk * N
+        return assigned_indices, ious[assigned_indices]  # [M] M <= topk * N
     
 
 class IoULoss(nn.Module):
     def __init__(self, eps=1e-6):
         super(IoULoss, self).__init__()
         self.eps = eps
+        self.mse = nn.MSELoss()
 
     def forward(self, preds, targets):
-        # preds: [M, 4] (cx, cy, w, h) normalized
-        # targets: [N, 4] (cx, cy, w, h) normalized
-        # preds and targets are in (cx, cy, w, h) format
-        preds = self.cxcywh_to_xyxy(preds)
-        targets = self.cxcywh_to_xyxy(targets)
-        # use mse distance to calculate loss
-        for target in targets:
-            # TODO
+        """
+        preds: [M, 4] (cx, cy, w, h) normalized
+        targets: [N, 4] (cx, cy, w, h) normalized
+        """
+        if preds.numel() == 0 or targets.numel() == 0:
+            # nothing to match
+            return torch.tensor(0.0, device=preds.device, requires_grad=True)
 
-    @staticmethod
-    def cxcywh_to_xyxy(boxes):
-        cx, cy, w, h = boxes.unbind(-1)
-        x1 = cx - w / 2
-        y1 = cy - h / 2
-        x2 = cx + w / 2
-        y2 = cy + h / 2
-        return torch.stack((x1, y1, x2, y2), dim=-1)
+        # --- Hungarian matching ---
+        # compute pairwise cost matrix [M, N]
+        M, N = preds.size(0), targets.size(0)
+        cost_matrix = torch.cdist(preds, targets, p=2).cpu().detach().numpy()  # L2 distance
+
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+        # select matched pairs
+        matched_preds = preds[row_ind]
+        matched_targets = targets[col_ind]
+
+        # compute regression loss with MSE
+        loss = self.mse(matched_preds, matched_targets)
+        return loss
     
     
     
@@ -177,3 +185,5 @@ def visualize_training_data(dataloader, save_dir="train_vis", num_batches=10):
             break
 
     print(f"Saved {num_batches} batches of training samples to '{save_dir}'")
+    
+    

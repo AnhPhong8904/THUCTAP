@@ -30,6 +30,8 @@ class BBoxDataset(Dataset):
     def load_data(self):
         json_files = [f for f in os.listdir(self.json_dir) if f.endswith('.json')]
         for json_file in tqdm.tqdm(json_files, desc="Loading JSON files..."):
+            if json_file != "1.json":  # skip corrupted file
+                continue
             json_path = os.path.join(self.json_dir, json_file)
             with open(json_path, 'r') as f:
                 data = json.load(f)
@@ -45,6 +47,7 @@ class BBoxDataset(Dataset):
                     bboxes.append(box)
                 self.bboxes.append(bboxes)
                 self.max_boxes = max(self.max_boxes, len(bboxes))
+                cv2.imwrite(json_file.replace(".json", ".jpg"), image)
                 
     def __len__(self):
         return len(self.images)

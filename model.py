@@ -31,15 +31,14 @@ class SimpleCNN(nn.Module):
             nn.ReLU()
         )
         self.head = nn.Sequential(
-            nn.Conv2d(dim*16, 5, 3, stride=1, padding=1), # 5 = 4 bbox + 1 obj confidence
-            nn.Sigmoid()
-        )
+            nn.Conv2d(dim*16, 5, 1, stride=1) # 5 = 4 bbox + 1 obj confidence
+            )
 
     def forward(self, x):
         x = self.backbone(x)
         x = self.head(x)
         B, C, H, W = x.shape
-        x = x.permute(0, 3, 1, 2)  # [B, 5, H, W]
+        x = x.permute(0, 2, 3, 1)  # [B, 5, H, W]
         x = x.reshape(B, H*W, C)
         return x
 
@@ -49,6 +48,6 @@ if __name__ == "__main__":
     model = SimpleCNN()
     x = torch.randn(1, 3, 224, 224)
     y = model(x)
-    print(y.shape)  # [1, 5, 14, 14]
+    print(y.shape)  # [1, 14*14, 5]
     flops, params = thop.profile(model, inputs=(x,))
     print(f"FLOPS: {flops/1e9:.2f} GFLOPS, Params: {params/1e6:.2f}M")
