@@ -55,7 +55,7 @@ def train(epochs=1000,
             print(f" ==> ✅ Model saved with loss: {min_loss:.4f}")
         else:
             print("")
-        infer("1.jpg", model, save_path="test.jpg", confident_score_threshold=0.3)
+        infer(train_dataset.images[0], model, save_path="test.jpg", confident_score_threshold=0.3)
         
 
 if __name__ == "__main__":

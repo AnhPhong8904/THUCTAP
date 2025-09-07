@@ -15,6 +15,7 @@ from torch.utils.data import Dataset
 import base64
 import json
 import tqdm
+from pathlib import Path
 
 
 class BBoxDataset(Dataset):
@@ -29,10 +30,10 @@ class BBoxDataset(Dataset):
         
     def load_data(self):
         json_files = [f for f in os.listdir(self.json_dir) if f.endswith('.json')]
+        json_files = sorted(json_files, key=lambda x: int(x.replace(".json", "")))[150:151]
         for json_file in tqdm.tqdm(json_files, desc="Loading JSON files..."):
-            if json_file not in ["1.json"]:  # skip corrupted file
-                continue
             json_path = os.path.join(self.json_dir, json_file)
+            
             with open(json_path, 'r') as f:
                 data = json.load(f)
                 image = base64.b64decode(data["imageData"])
@@ -47,7 +48,6 @@ class BBoxDataset(Dataset):
                     bboxes.append(box)
                 self.bboxes.append(bboxes)
                 self.max_boxes = max(self.max_boxes, len(bboxes))
-                cv2.imwrite(json_file.replace(".json", ".jpg"), image)
                 
     def __len__(self):
         return len(self.images)
@@ -89,11 +89,7 @@ class BBoxDataset(Dataset):
         ymin = (ymin * scale) + top
         xmax = (xmax * scale) + left
         ymax = (ymax * scale) + top
-        cx = (xmin + xmax) / 2 / w
-        cy = (ymin + ymax) / 2 / h
-        bw = (xmax - xmin) / w
-        bh = (ymax - ymin) / h
-        return torch.tensor([cx, cy, bw, bh], dtype=torch.float32)
+        return torch.tensor([xmin / w, ymin / h, xmax / w, ymax / h], dtype=torch.float32)
 
 
     def __getitem__(self, idx):
