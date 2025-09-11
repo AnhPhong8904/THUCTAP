@@ -16,13 +16,13 @@ class SimpleCNN(nn.Module):
             nn.MaxPool2d(2), #3x3
             nn.Conv2d(dim*4, dim*8, 3, stride=2, padding=1), #2x2
             nn.ReLU(),
-            nn.Conv2d(dim*8, 4, 1, stride=1, padding=0),
+            nn.Conv2d(dim*8, 5, 1, stride=1, padding=0),  # 5 channels: conf + 4 box coords
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.features(x)   # (B,4,2,2)
+        x = self.features(x)   # (B,5,2,2)
         B,C,H,W = x.shape
         x = x.permute(0,2,3,1) # (B,H,W,C)
-        x = x.view(B, H*W, C)  # (B,4,4)
+        x = x.view(B, H*W, C)  # (B,4,5) - 4 anchors, 5 channels each
         return x

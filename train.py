@@ -2,20 +2,20 @@ import os
 import cv2
 import numpy as np
 import torch
-from torch.nn import MSELoss, L1Loss
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from model import SimpleCNN  # Assuming SimpleCNN is defined in model.py
 from dataset import BBoxDataset  # Assuming BBoxDataset is defined in dataset.py
+from ultis import ObjectDetectorLoss  # Import new loss function
 
 def visualize_training_data(dataloader, save_dir="train_vis", num_batches=10):
     os.makedirs(save_dir, exist_ok=True)
     batch_count = 0
     for imgs, targets in dataloader:
         # imgs: [B, 3, H, W]
-        # targets: [B, num_boxes, 4] (cx, cy, bw, bh)
+        # targets: [B, num_boxes, 4] (cx, cy, bw, bh) normalized
         B, _, H, W = imgs.shape
         num_boxes = targets.shape[1]
 
@@ -83,7 +83,7 @@ def train():
     visualize_training_data(test_loader, save_dir="visualize/test", num_batches=3)
     
     model = SimpleCNN().to(device)
-    criterion = MSELoss()
+    criterion = ObjectDetectorLoss(weight_box=5.0, weight_cls=0.5)  # New loss function
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     epochs = 100
@@ -96,11 +96,15 @@ def train():
 
             optimizer.zero_grad()
             outputs = model(imgs)
-            loss = criterion(outputs, targets)
-            loss.backward()
+            
+            # ObjectDetectorLoss returns (box_loss, cls_loss)
+            box_loss, cls_loss = criterion(outputs, targets)
+            total_loss = box_loss + cls_loss
+            
+            total_loss.backward()
             optimizer.step()
 
-            running_loss += loss.item() * imgs.size(0)
+            running_loss += total_loss.item() * imgs.size(0)
 
         epoch_loss = running_loss / len(train_loader)
         
@@ -108,13 +112,24 @@ def train():
         # test phase
         model.eval()
         test_loss = 0
+        test_box_loss = 0
+        test_cls_loss = 0
         for imgs, targets in test_loader:
             imgs, targets = imgs.to(device), targets.to(device)
             with torch.no_grad():
                 outputs = model(imgs)
-                test_loss += criterion(outputs, targets).item()
+                box_loss, cls_loss = criterion(outputs, targets)
+                total_loss = box_loss + cls_loss
+                test_loss += total_loss.item()
+                test_box_loss += box_loss.item()
+                test_cls_loss += cls_loss.item()
+        
         test_loss /= len(test_loader)
-        print(f"Epoch [{epoch + 1}/{epochs}], Train Loss: {epoch_loss:.4f}, Test Loss: {test_loss:.4f}")
+        test_box_loss /= len(test_loader)
+        test_cls_loss /= len(test_loader)
+        
+        print(f"Epoch [{epoch + 1}/{epochs}], Train Loss: {epoch_loss:.4f}")
+        print(f"  Test - Total: {test_loss:.4f}, Box: {test_box_loss:.4f}, Cls: {test_cls_loss:.4f}")
         if test_loss < min_loss:
             min_loss = test_loss
             torch.save(model.state_dict(), "best1.pt")
