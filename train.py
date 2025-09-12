@@ -1,11 +1,10 @@
 import os
-import cv2
-import numpy as np
 import torch
 import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from torchvision import transforms
 
+<<<<<<< HEAD
 from model import SimpleCNN  # Assuming SimpleCNN is defined in model.py
 from dataset import BBoxDataset  # Assuming BBoxDataset is defined in dataset.py
 from ultis import ObjectDetectorLoss  # Import new loss function
@@ -65,37 +64,46 @@ def visualize_training_data(dataloader, save_dir="train_vis", num_batches=10):
     
 
 def train():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_dataset = BBoxDataset(
-        img_dir=r"datasua\train",
-        csv_file=r"datasua\train.csv",
-    )
-    
-    test_dataset = BBoxDataset(
-        img_dir=r"datasua\test",
-        csv_file=r"datasua\test.csv",
-        augment=False
-    )
+=======
+from model import SimpleCNN
+from dataset import BBoxDataset
+from utils import visualize_training_data 
+from utils import ObjectDetectorLoss
+from inference import infer
 
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-    visualize_training_data(train_loader, save_dir="visualize/train", num_batches=10)
-    visualize_training_data(test_loader, save_dir="visualize/test", num_batches=3)
+def train(epochs=1000,
+          batch_size=128,
+          learning_rate=0.1):
+>>>>>>> 06598f4e01cb973dad671c62be1a5184304610d3
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_dataset = BBoxDataset(json_dir="LabelSua", augment=False)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    visualize_training_data(train_loader, 
+                            save_dir="visualize/train", 
+                            num_batches=3)
     
     model = SimpleCNN().to(device)
+<<<<<<< HEAD
     criterion = ObjectDetectorLoss(weight_box=5.0, weight_cls=0.5)  # New loss function
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     epochs = 100
+=======
+    criterion = ObjectDetectorLoss()
+    optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=5e-4)
+    scheduler = StepLR(optimizer, step_size=1, gamma=0.99)
+>>>>>>> 06598f4e01cb973dad671c62be1a5184304610d3
     min_loss = float('inf')
     for epoch in range(epochs):
-        running_loss = 0.0
+        running_loss, running_loss_box, running_loss_cls = 0.0, 0.0, 0.0
         model.train()
         for imgs, targets in train_loader:
             imgs, targets = imgs.to(device), targets.to(device)
 
             optimizer.zero_grad()
             outputs = model(imgs)
+<<<<<<< HEAD
             
             # ObjectDetectorLoss returns (box_loss, cls_loss)
             box_loss, cls_loss = criterion(outputs, targets)
@@ -106,8 +114,32 @@ def train():
 
             running_loss += total_loss.item() * imgs.size(0)
 
+=======
+            loss_box, loss_cls = criterion(outputs, targets)
+            loss = loss_cls + loss_box
+            loss.backward()
+            optimizer.step()
+
+            running_loss_box += loss_box.item()
+            running_loss_cls += loss_cls.item()
+            running_loss += loss.item()
+        scheduler.step()
+        epoch_loss_box = running_loss_box / len(train_loader)
+        epoch_loss_cls = running_loss_cls / len(train_loader)
+>>>>>>> 06598f4e01cb973dad671c62be1a5184304610d3
         epoch_loss = running_loss / len(train_loader)
+        print(f"Epoch [{epoch+1: 3d}/{epochs: 3d}], Loss Box: {epoch_loss_box:.4f}, Loss Cls: {epoch_loss_cls:.4f}", end="")
+        os.makedirs("checkpoints", exist_ok=True)
+        torch.save(model.state_dict(), "checkpoints/last.pt")
+        if epoch_loss < min_loss:
+            min_loss = epoch_loss
+            torch.save(model.state_dict(), "checkpoints/best.pt")
+            print(f" ==> ✅ Model saved with loss: {min_loss:.4f}")
+        else:
+            print("")
+        infer(train_dataset.images[0], model, save_path="test.jpg", confident_score_threshold=0.3)
         
+<<<<<<< HEAD
         
         # test phase
         model.eval()
@@ -135,6 +167,8 @@ def train():
             torch.save(model.state_dict(), "best1.pt")
             print(f"✅ Model saved with loss: {min_loss:.4f}")
 
+=======
+>>>>>>> 06598f4e01cb973dad671c62be1a5184304610d3
 
 if __name__ == "__main__":
     train()

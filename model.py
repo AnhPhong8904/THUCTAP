@@ -31,7 +31,12 @@ class SimpleCNN(nn.Module):
             nn.ReLU()
         )
         self.head = nn.Sequential(
+<<<<<<< HEAD
             nn.Conv2d(dim*16, 5, 1, stride=1) # 5 = 4 bbox + 1 obj confidence
+=======
+            nn.Conv2d(dim*16, 5, 1, stride=1), # 5 = 4 bbox + 1 obj confidence
+            nn.Sigmoid()
+>>>>>>> 06598f4e01cb973dad671c62be1a5184304610d3
             )
 
     def forward(self, x):
