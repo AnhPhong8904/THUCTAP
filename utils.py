@@ -28,6 +28,7 @@ class ObjectDetectorLoss(nn.Module):
         a = anchors - a
         b = anchors + b
         return torch.cat((a, b), -1)
+
     
     def forward(self, preds:torch.Tensor, targets:torch.Tensor):
         # preds: [B, H*W, 5] (conf, x1, y1, x2, y2) normalized
@@ -37,30 +38,29 @@ class ObjectDetectorLoss(nn.Module):
         B, N, _ = targets.shape
         cls_loss = 0.0
         box_loss = 0.0
-        for b in range(B):
-            org_target = self.remove_empty_boxes(targets[b])
-            pred = preds[b]  # [H*W, 5]
-            cls_pred = pred[:, 0]  # [H*W]
-            box_pred = pred[:, 1:]  # [H*W, 4]
-            box_pred = self.box_decode(anchors, box_pred)  # [H*W, 4]
-            cls_target = torch.zeros_like(cls_pred, device=preds.device)
-            balanced_conf = torch.ones_like(cls_target, device=preds.device)
-            if org_target.shape[0] != 0:
+        org_target = self.remove_empty_boxes(targets)
+        pred = preds  # [H*W, 5]
+        cls_pred = pred[:, 0]  # [H*W]
+        box_pred = pred[:, 1:]  # [H*W, 4]
+        box_pred = self.box_decode(anchors, box_pred)  # [H*W, 4]
+        cls_target = torch.zeros_like(cls_pred, device=preds.device)
+        balanced_conf = torch.ones_like(cls_target, device=preds.device)
+        if org_target.shape[0] != 0:
                 # không có bbox GT trong ảnh này
                 # tính loss toàn bộ là loss của class = 0
-                positive_mask, target_conf, new_target_box = self.assigner.assign(anchors, box_pred, org_target)  # [topk]
-                pos_box_pred = box_pred[positive_mask]  # [topk, 4]
+            positive_mask, target_conf, new_target_box = self.assigner.assign(anchors, box_pred, org_target)  # [topk]
+            pos_box_pred = box_pred[positive_mask]  # [topk, 4]
                 # pos_box_pred = box_pred[assigned_indices]  # [topk, 4]
                 # # tính loss box
-                box_loss += self.iou_loss(pos_box_pred, new_target_box[positive_mask]) / positive_mask.shape[0]
+            box_loss += self.iou_loss(pos_box_pred, new_target_box[positive_mask]) / positive_mask.shape[0]
                 # # tính loss class
-                cls_target[positive_mask] = 1.0
-                balanced_conf[positive_mask] = positive_mask.shape[0] / torch.sum(positive_mask) / 2
-            else:
+            cls_target[positive_mask] = 1.0
+            balanced_conf[positive_mask] = positive_mask.shape[0] / torch.sum(positive_mask) / 2
+        else:
                 # không có bbox GT trong ảnh này
                 # tính loss toàn bộ là loss của class = 0
-                pass
-            cls_loss += (self.bce_loss(cls_pred, cls_target) * balanced_conf / cls_pred.shape[0]).sum()
+            pass
+        cls_loss += (self.bce_loss(cls_pred, cls_target) * balanced_conf / cls_pred.shape[0]).sum()
             
         
         return (self.weight_box * box_loss / B), (self.weight_cls * cls_loss / B)
@@ -71,7 +71,7 @@ class Assigner:
     
     def assign(self, anchors, preds, targets):
         # anchors: [M, 2] (x1, y1)
-        # preds:   [M, 4] (x1, y1, x2, y2)
+        # preds:   [M, 4] (x1, y1, x2, y2)  z
         # targets: [N, 4] (x1, y1, x2, y2)
 
         # 1. Tính IoU giữa toàn bộ preds và targets → [M, N]
