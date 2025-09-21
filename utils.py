@@ -119,9 +119,8 @@ class IoULoss(nn.Module):
         # targets *= 224  # scale to input image size
         # preds *= 224  # scale to input image size
         ious = []
-        for pred in preds:
-            for target in targets:
-                ious.append(bbox_iou(pred, target).unsqueeze(0))
+        for pred, target in zip(preds, targets):
+            ious.append(bbox_iou(pred, target).unsqueeze(0))
         ious = torch.cat(ious, dim=0)  # [M*N]
         loss = 1 - ious  # [M*N]
         return loss.sum()
